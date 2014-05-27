@@ -180,7 +180,10 @@ ErlDrvData unix_sock_driver_start(ErlDrvPort port, char *cmd)
   char *address = find_address(cmd);
 
   // TODO: setup_socket() < 0 => error
-  setup_socket(context, address, strlen(address));
+  if (setup_socket(context, address, strlen(address)) < 0) {
+    fprintf(stderr, "@@ setup socket: error\r\n");
+    return (ErlDrvData)(-1);
+  }
 
   return (ErlDrvData)context;
 }
