@@ -62,6 +62,7 @@ int unix_srv_listen(char *address, int type, uid_t uid, gid_t gid, mode_t mode)
   bind_addr.sun_family = AF_UNIX;
   strncpy(bind_addr.sun_path, address, sizeof(bind_addr.sun_path));
 
+  // XXX: remember to preserve errno on error
   int result = bind(lsock, (struct sockaddr *)&bind_addr, sizeof(bind_addr));
   if (result != 0)
     return -1;
@@ -69,6 +70,7 @@ int unix_srv_listen(char *address, int type, uid_t uid, gid_t gid, mode_t mode)
   chmod(address, mode);
   // TODO: chown(address, uid, gid);
 
+  // XXX: remember to preserve errno on error
   result = listen(lsock, 1);
   if (result != 0) {
     int old_errno = errno;
@@ -181,8 +183,11 @@ ErlDrvData unix_sock_driver_start(ErlDrvPort port, char *cmd)
 
   // TODO: setup_socket() < 0 => error
   if (setup_socket(context, address, strlen(address)) < 0) {
+    int old_errno = errno;
     fprintf(stderr, "@@ setup socket: error\r\n");
-    return (ErlDrvData)(-1);
+    errno = old_errno;
+
+    return ERL_DRV_ERROR_ERRNO;
   }
 
   return (ErlDrvData)context;
@@ -209,6 +214,7 @@ int setup_socket(struct unix_sock_context *context, char *addr, int len)
   gid_t gid = 0;      // TODO: read from command buffer
   mode_t mode = 0660; // TODO: read from command buffer
 
+  // XXX: remember to preserve errno on error
   int lsock = unix_srv_listen(context->server.address, type, uid, gid, mode);
   if (lsock < 0)
     return -1;
