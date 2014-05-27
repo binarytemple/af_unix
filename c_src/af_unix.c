@@ -120,7 +120,6 @@ void        unix_sock_driver_output(ErlDrvData drv_data, char *buf, erl_size_t l
 void        unix_sock_driver_stop(ErlDrvData drv_data);
 void        unix_sock_driver_ready_input(ErlDrvData drv_data, ErlDrvEvent event);
 erl_ssize_t unix_sock_driver_call(ErlDrvData drv_data, unsigned int command, char *buf, erl_size_t len, char **rbuf, erl_size_t rlen, unsigned int *flags);
-erl_ssize_t unix_sock_driver_control(ErlDrvData drv_data, unsigned int command, char *buf, erl_size_t len, char **rbuf, erl_size_t rlen);
 void        unix_sock_driver_stop_select(ErlDrvEvent event, void *reserved);
 
 ErlDrvEntry unix_sock_driver_entry = {
@@ -281,24 +280,6 @@ void unix_sock_driver_output(ErlDrvData drv_data, char *buf, erl_size_t len)
   } else { // context->type == entry_server
     // TODO: error
   }
-}
-
-// }}}
-//----------------------------------------------------------
-// Erlang port control {{{
-
-erl_ssize_t unix_sock_driver_control(ErlDrvData drv_data, unsigned int command, char *buf, erl_size_t len, char **rbuf, erl_size_t rlen)
-{
-  struct unix_sock_context *context = (struct unix_sock_context *)drv_data;
-
-  // TODO:
-  //   * {active, true | false | once}
-  //   * owner (port_connect(Port, Pid) + unlink())
-
-  fprintf(stderr, "@@ driver control(type=%d, fd=%d, command=%d, rlen=%d)\r\n",
-          context->type, context->fd, command, (int)rlen);
-
-  return 0;
 }
 
 // }}}
