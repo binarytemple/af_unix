@@ -7,6 +7,7 @@
 #include <string.h>
 #include <stdint.h>
 #include <unistd.h>
+#include <fcntl.h>
 #include <poll.h>
 #include <sys/socket.h>
 #include <sys/un.h>
@@ -117,6 +118,7 @@ void        unix_sock_driver_output(ErlDrvData drv_data, char *buf, erl_size_t l
 void        unix_sock_driver_stop(ErlDrvData drv_data);
 void        unix_sock_driver_ready_input(ErlDrvData drv_data, ErlDrvEvent event);
 erl_ssize_t unix_sock_driver_call(ErlDrvData drv_data, unsigned int command, char *buf, erl_size_t len, char **rbuf, erl_size_t rlen, unsigned int *flags);
+erl_ssize_t unix_sock_driver_control(ErlDrvData drv_data, unsigned int command, char *buf, erl_size_t len, char **rbuf, erl_size_t rlen);
 void        unix_sock_driver_stop_select(ErlDrvEvent event, void *reserved);
 
 ErlDrvEntry unix_sock_driver_entry = {
@@ -220,8 +222,8 @@ int setup_socket(struct unix_sock_context *context, char *addr, int len)
 
 void unix_sock_driver_stop_select(ErlDrvEvent event, void *reserved)
 {
-  int fd = (int)event;
-  fprintf(stderr, "@@ stop select(%d)\r\n", fd);
+  long int fd = (long int)event;
+  fprintf(stderr, "@@ stop select(%d)\r\n", (int)fd);
 
   close(fd);
 }
@@ -237,9 +239,9 @@ void unix_sock_driver_stop(ErlDrvData drv_data)
   fprintf(stderr, "@@ driver stop(type=%d, fd=%d)\r\n",
           context->type, context->fd);
 
-  ErlDrvEvent event = (ErlDrvEvent)(context->fd);
+  ErlDrvEvent event = (ErlDrvEvent)((long int)context->fd);
   if (context->type == entry_client) {
-    driver_select(context->erl_port, event, ERL_DRV_USE | ERL_DRV_READ, 0);
+    //driver_select(context->erl_port, event, ERL_DRV_USE | ERL_DRV_READ, 0);
   } else { // context->type == entry_server
     // XXX: server socket is not under Erlang's select mechanism, so it can be
     // safely close here
@@ -273,6 +275,18 @@ void unix_sock_driver_output(ErlDrvData drv_data, char *buf, erl_size_t len)
 //----------------------------------------------------------
 // Erlang port call {{{
 
+erl_ssize_t unix_sock_driver_control(ErlDrvData drv_data, unsigned int command, char *buf, erl_size_t len, char **rbuf, erl_size_t rlen)
+{
+  struct unix_sock_context *context = (struct unix_sock_context *)drv_data;
+
+  fprintf(stderr, "@@ driver control(type=%d, fd=%d, command=%d, rlen=%d)\r\n",
+          context->type, context->fd, command, rlen);
+
+  return 0;
+}
+
+void spawn_client_port(ErlDrvPort creator, int client);
+
 erl_ssize_t unix_sock_driver_call(ErlDrvData drv_data, unsigned int command,
                                   char *buf, erl_size_t len,
                                   char **rbuf, erl_size_t rlen,
@@ -280,12 +294,14 @@ erl_ssize_t unix_sock_driver_call(ErlDrvData drv_data, unsigned int command,
 {
   struct unix_sock_context *context = (struct unix_sock_context *)drv_data;
 
-  fprintf(stderr, "@@ driver call(type=%d, fd=%d, command=%d, rlen=%d)\r\n",
-          context->type, context->fd, command, rlen);
+  fprintf(stderr, "@@ driver call(type=%d, fd=%d, command=%d, rlen=%d, flags=%x)\r\n",
+          context->type, context->fd, command, rlen, *flags);
 
   if (context->type == entry_client)
     // client socket doesn't support port_call()
     return -1;
+
+  int has_new_client = 0;
 
   switch (command) {
     case 133:
@@ -295,12 +311,11 @@ erl_ssize_t unix_sock_driver_call(ErlDrvData drv_data, unsigned int command,
         fprintf(stderr, "@@ context->server.poll[0].fd=%d context.fd=%d\r\n",
                 context->server.poll[0].fd, context->fd);
 
-        // TODO: implement me
-
         int client = accept(context->server.poll[0].fd, NULL, NULL);
-        char msg[] = "Hello. This is a TODO.\n";
-        write(client, msg, sizeof(msg) - 1);
-        close(client);
+        if (client > -1) {
+          spawn_client_port(context->erl_port, client);
+          has_new_client = 1;
+        }
       }
       fprintf(stderr, "@@ poll() finished\r\n");
     break;
@@ -308,15 +323,22 @@ erl_ssize_t unix_sock_driver_call(ErlDrvData drv_data, unsigned int command,
     // TODO: default: error
   }
 
-  // result: {ok,everything}
-  char result_atom_1[] = "ok";
-  char result_atom_2[] = "everything";
+  // result:
+  //   * {ok,nothing}
+  //   * {ok,client} + Caller ! {Port,{client,ClientPort}}
+  // I would happily return ClientPort directly, but I can't easily convert
+  // ErlDrvPort to external term format, so I'll send a message instead (or
+  // have already sent, actually).
+  char atom_ok[] = "ok";
+  char atom_nothing[] = "nothing";
+  char atom_client[] = "client";
+  char *atom_result = (has_new_client) ? atom_client : atom_nothing;
 
   int result_len = 0;
   ei_encode_version(NULL, &result_len);
-  ei_encode_tuple_header(NULL, &result_len, 2);     // assume successful
-  ei_encode_atom(NULL, &result_len, result_atom_1); // assume successful
-  ei_encode_atom(NULL, &result_len, result_atom_2); // assume successful
+  ei_encode_tuple_header(NULL, &result_len, 2);   // assume successful
+  ei_encode_atom(NULL, &result_len, atom_ok);     // assume successful
+  ei_encode_atom(NULL, &result_len, atom_result); // assume successful
 
   if (result_len > rlen) {
     *rbuf = driver_alloc(result_len);
@@ -325,8 +347,8 @@ erl_ssize_t unix_sock_driver_call(ErlDrvData drv_data, unsigned int command,
   result_len = 0;
   ei_encode_version(*rbuf, &result_len);
   ei_encode_tuple_header(*rbuf, &result_len, 2);
-  ei_encode_atom(*rbuf, &result_len, result_atom_1);
-  ei_encode_atom(*rbuf, &result_len, result_atom_2);
+  ei_encode_atom(*rbuf, &result_len, atom_ok);
+  ei_encode_atom(*rbuf, &result_len, atom_result);
 
   fprintf(stderr, "@@ data =");
   int i;
@@ -336,9 +358,36 @@ erl_ssize_t unix_sock_driver_call(ErlDrvData drv_data, unsigned int command,
 
   fprintf(stderr, "@@ returning %d\r\n", result_len);
   return result_len;
+}
 
-  //ErlDrvEvent event = (ErlDrvEvent)(context->fd);
-  //driver_select(context->erl_port, event, ERL_DRV_USE | ERL_DRV_READ, 1);
+void spawn_client_port(ErlDrvPort creator, int client)
+{
+  fprintf(stderr, "@@ spawning client port (fd=%d)\r\n", client);
+  ErlDrvTermData caller = driver_caller(creator);
+
+  struct unix_sock_context *context =
+    driver_alloc(sizeof(struct unix_sock_context));
+  memset(context, 0, sizeof(*context));
+
+  context->type = entry_client;
+  context->fd = client;
+  ErlDrvPort port = driver_create_port(creator, caller, PORT_DRIVER_NAME,
+                                       (ErlDrvData)context);
+  context->erl_port = port;
+
+  ErlDrvTermData data[] = {
+    ERL_DRV_PORT, driver_mk_port(creator),
+      ERL_DRV_ATOM, driver_mk_atom("client"),
+      ERL_DRV_PORT, driver_mk_port(port),
+      ERL_DRV_TUPLE, 2,
+    ERL_DRV_TUPLE, 2
+  };
+  // FIXME: this will be removed in OTP R17, use erl_drv_send_term()
+  int q = driver_send_term(creator, caller, data, sizeof(data) / sizeof(data[0]));
+  fprintf(stderr, "@@ send term(): %d\r\n", q);
+
+  //ErlDrvEvent event = (ErlDrvEvent)((long int)context->fd);
+  //driver_select(port, event, ERL_DRV_USE | ERL_DRV_READ, 1);
 }
 
 // }}}
