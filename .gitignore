@@ -2,3 +2,5 @@
 *.beam
 /ebin/*.app
 /doc
+/c_src/*.o
+/priv/*.so
