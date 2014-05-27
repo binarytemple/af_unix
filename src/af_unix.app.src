@@ -1,0 +1,8 @@
+{application, af_unix, [
+  {description, "AF_UNIX module"},
+  {vsn, "0.0.1"},
+  {registered, []},
+  {applications, [kernel, stdlib]},
+  {env, []}
+]}.
+% vim:ft=erlang
