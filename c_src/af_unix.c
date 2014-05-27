@@ -445,6 +445,7 @@ void read_data(ErlDrvPort port, int fd, char *buffer, int buflen)
     };
     // FIXME: this will be removed in OTP R17, use erl_drv_send_term()
     driver_send_term(port, owner, data, sizeof(data) / sizeof(data[0]));
+    driver_failure_eof(port);
   } else { // read_len > 0
     ErlDrvTermData data[] = { // send `{unix, Port, Data}'
       ERL_DRV_ATOM, driver_mk_atom("unix"),
