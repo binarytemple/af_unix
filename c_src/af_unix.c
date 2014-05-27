@@ -141,7 +141,10 @@ ErlDrvEntry unix_sock_driver_entry = {
   ERL_DRV_EXTENDED_MARKER,
   ERL_DRV_EXTENDED_MAJOR_VERSION,
   ERL_DRV_EXTENDED_MINOR_VERSION,
-  ERL_DRV_FLAG_USE_PORT_LOCKING,  // XXX: driver flags
+  // XXX: Can't use ERL_DRV_FLAG_USE_PORT_LOCKING here, as
+  // driver_create_port() clones already locked port and I can't unlock it in
+  // any official way.
+  0,                            // driver flags
   NULL,                         // <reserved>
   NULL,                         // called when process monitor dies
   unix_sock_driver_stop_select  // called to close an event object
