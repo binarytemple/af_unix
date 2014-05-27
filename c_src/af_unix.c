@@ -308,17 +308,34 @@ erl_ssize_t unix_sock_driver_call(ErlDrvData drv_data, unsigned int command,
     // TODO: default: error
   }
 
-  char result_atom[] = "all_ok";
-  int index = 0;
-  int result_len = 0;
-  ei_encode_atom(NULL, &result_len, result_atom); // assume successful
-  fprintf(stderr, "@@ encode_atom(%s) -> %d\r\n", result_atom, result_len);
-  if (result_len > rlen) {
-    // TODO: driver_alloc()
-  }
-  ei_encode_atom(*rbuf, &index, result_atom);
+  // result: {ok,everything}
+  char result_atom_1[] = "ok";
+  char result_atom_2[] = "everything";
 
-  return index;
+  int result_len = 0;
+  ei_encode_version(NULL, &result_len);
+  ei_encode_tuple_header(NULL, &result_len, 2);     // assume successful
+  ei_encode_atom(NULL, &result_len, result_atom_1); // assume successful
+  ei_encode_atom(NULL, &result_len, result_atom_2); // assume successful
+
+  if (result_len > rlen) {
+    *rbuf = driver_alloc(result_len);
+  }
+
+  result_len = 0;
+  ei_encode_version(*rbuf, &result_len);
+  ei_encode_tuple_header(*rbuf, &result_len, 2);
+  ei_encode_atom(*rbuf, &result_len, result_atom_1);
+  ei_encode_atom(*rbuf, &result_len, result_atom_2);
+
+  fprintf(stderr, "@@ data =");
+  int i;
+  for (i = 0; i < result_len; ++i)
+    fprintf(stderr, " %02x", (unsigned char)rbuf[0][i]);
+  fprintf(stderr, "\r\n");
+
+  fprintf(stderr, "@@ returning %d\r\n", result_len);
+  return result_len;
 
   //ErlDrvEvent event = (ErlDrvEvent)(context->fd);
   //driver_select(context->erl_port, event, ERL_DRV_USE | ERL_DRV_READ, 1);
