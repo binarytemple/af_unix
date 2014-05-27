@@ -15,7 +15,6 @@
 #include <errno.h>
 
 #include <limits.h>
-#include <stdlib.h> // calloc(), free()
 
 // }}}
 //----------------------------------------------------------
@@ -167,7 +166,8 @@ ErlDrvData unix_sock_driver_start(ErlDrvPort port, char *cmd)
           entry_server, entry_client);
 
   struct unix_sock_context *context =
-    calloc(1, sizeof(struct unix_sock_context));
+    driver_alloc(sizeof(struct unix_sock_context));
+  memset(context, 0, sizeof(*context));
 
   context->erl_port = port;
   context->type = entry_server;
@@ -246,7 +246,7 @@ void unix_sock_driver_stop(ErlDrvData drv_data)
     unix_srv_close(context->server.address, context->fd);
   }
 
-  free(context);
+  driver_free(context);
 }
 
 // }}}
