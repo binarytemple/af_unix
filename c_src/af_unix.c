@@ -159,7 +159,7 @@ DRIVER_INIT(PORT_DRIVER_NAME_SYM)
 
 // }}}
 //----------------------------------------------------------
-// Erlang port start {{{
+// Erlang port start (listening socket) {{{
 
 int setup_socket(struct unix_sock_context *context, char *addr, int len);
 char* find_address(char *cmd);
@@ -242,9 +242,9 @@ void unix_sock_driver_stop(ErlDrvData drv_data)
   fprintf(stderr, "@@ driver stop(type=%d, fd=%d)\r\n",
           context->type, context->fd);
 
-  ErlDrvEvent event = (ErlDrvEvent)((long int)context->fd);
   if (context->type == entry_client) {
-    //driver_select(context->erl_port, event, ERL_DRV_USE | ERL_DRV_READ, 0);
+    ErlDrvEvent event = (ErlDrvEvent)((long int)context->fd);
+    driver_select(context->erl_port, event, ERL_DRV_USE | ERL_DRV_READ, 0);
   } else { // context->type == entry_server
     // XXX: server socket is not under Erlang's select mechanism, so it can be
     // safely close here
@@ -256,7 +256,7 @@ void unix_sock_driver_stop(ErlDrvData drv_data)
 
 // }}}
 //----------------------------------------------------------
-// Erlang port output (data written to port) {{{
+// Erlang port output (data written to port; connection socket) {{{
 
 void unix_sock_driver_output(ErlDrvData drv_data, char *buf, erl_size_t len)
 {
@@ -276,17 +276,25 @@ void unix_sock_driver_output(ErlDrvData drv_data, char *buf, erl_size_t len)
 
 // }}}
 //----------------------------------------------------------
-// Erlang port call {{{
+// Erlang port control {{{
 
 erl_ssize_t unix_sock_driver_control(ErlDrvData drv_data, unsigned int command, char *buf, erl_size_t len, char **rbuf, erl_size_t rlen)
 {
   struct unix_sock_context *context = (struct unix_sock_context *)drv_data;
 
+  // TODO:
+  //   * {active, true | false | once}
+  //   * owner (port_connect(Port, Pid) + unlink())
+
   fprintf(stderr, "@@ driver control(type=%d, fd=%d, command=%d, rlen=%d)\r\n",
-          context->type, context->fd, command, rlen);
+          context->type, context->fd, command, (int)rlen);
 
   return 0;
 }
+
+// }}}
+//----------------------------------------------------------
+// Erlang port call (listening socket) {{{
 
 void spawn_client_port(ErlDrvPort creator, int client);
 
@@ -298,7 +306,7 @@ erl_ssize_t unix_sock_driver_call(ErlDrvData drv_data, unsigned int command,
   struct unix_sock_context *context = (struct unix_sock_context *)drv_data;
 
   fprintf(stderr, "@@ driver call(type=%d, fd=%d, command=%d, rlen=%d, flags=%x)\r\n",
-          context->type, context->fd, command, rlen, *flags);
+          context->type, context->fd, command, (int)rlen, *flags);
 
   if (context->type == entry_client)
     // client socket doesn't support port_call()
@@ -386,11 +394,10 @@ void spawn_client_port(ErlDrvPort creator, int client)
     ERL_DRV_TUPLE, 2
   };
   // FIXME: this will be removed in OTP R17, use erl_drv_send_term()
-  int q = driver_send_term(creator, caller, data, sizeof(data) / sizeof(data[0]));
-  fprintf(stderr, "@@ send term(): %d\r\n", q);
+  driver_send_term(creator, caller, data, sizeof(data) / sizeof(data[0]));
 
-  //ErlDrvEvent event = (ErlDrvEvent)((long int)context->fd);
-  //driver_select(port, event, ERL_DRV_USE | ERL_DRV_READ, 1);
+  ErlDrvEvent event = (ErlDrvEvent)((long int)context->fd);
+  driver_select(port, event, ERL_DRV_USE | ERL_DRV_READ, 1);
 }
 
 // }}}
@@ -415,7 +422,30 @@ void unix_sock_driver_ready_input(ErlDrvData drv_data, ErlDrvEvent event)
 
 void read_data(ErlDrvPort port, int fd, char *buffer, int buflen)
 {
-  // TODO: implement me: read() + driver_output()
+  ErlDrvTermData owner = driver_connected(port);
+
+  int read_len = read(fd, buffer, buflen);
+
+  if (read_len < 0) {
+    // TODO: send `{unix_error, Port, Reason}'
+  } else if (read_len == 0) {
+    ErlDrvTermData data[] = { // send `{unix_closed, Port}'
+      ERL_DRV_ATOM, driver_mk_atom("unix_closed"),
+      ERL_DRV_PORT, driver_mk_port(port),
+      ERL_DRV_TUPLE, 2
+    };
+    // FIXME: this will be removed in OTP R17, use erl_drv_send_term()
+    driver_send_term(port, owner, data, sizeof(data) / sizeof(data[0]));
+  } else { // read_len > 0
+    ErlDrvTermData data[] = { // send `{unix, Port, Data}'
+      ERL_DRV_ATOM, driver_mk_atom("unix"),
+      ERL_DRV_PORT, driver_mk_port(port),
+      ERL_DRV_BUF2BINARY, (ErlDrvTermData)buffer, read_len,
+      ERL_DRV_TUPLE, 3
+    };
+    // FIXME: this will be removed in OTP R17, use erl_drv_send_term()
+    driver_send_term(port, owner, data, sizeof(data) / sizeof(data[0]));
+  }
 }
 
 // }}}
