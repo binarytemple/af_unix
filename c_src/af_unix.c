@@ -45,6 +45,8 @@ typedef int erl_size_t;
 typedef int erl_ssize_t;
 #endif
 
+#define PORT_COMMAND_ACCEPT 133
+
 // }}}
 //----------------------------------------------------------
 
@@ -305,7 +307,7 @@ erl_ssize_t unix_sock_driver_call(ErlDrvData drv_data, unsigned int command,
   int has_new_client = 0;
 
   switch (command) {
-    case 133:
+    case PORT_COMMAND_ACCEPT:
       fprintf(stderr, "@@ poll()\r\n");
       if (poll(context->server.poll, 1, 0) > 0) {
         // context->server.poll[0].fd == context->fd
