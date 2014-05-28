@@ -28,6 +28,8 @@
 -define(PORT_DRIVER_NAME, "af_unix_drv").
 -define(APP_NAME, af_unix).
 
+-define(ACCEPT_LOOP_INTERVAL, 100). % 100ms
+
 -define(PORT_COMMAND_ACCEPT, 133).
 
 %%%---------------------------------------------------------------------------
@@ -75,11 +77,14 @@ listen(Address) ->
 -spec accept(server_socket()) ->
   {ok, connection_socket()} | {error, term()}.
 
-accept(_Socket) ->
-  % erlang:port_call(Socket, ?PORT_COMMAND_ACCEPT, ignore) ->
-  %     {ok, nothing}
-  %   | {ok, client} + {Socket, {client, ClientSocket}}
-  {error, not_implemented}.
+accept(Socket) ->
+  case try_accept(Socket) of
+    {ok, Client} ->
+      {ok, Client};
+    nothing ->
+      timer:sleep(?ACCEPT_LOOP_INTERVAL),
+      accept(Socket)
+  end.
 
 %% @doc Accept a client connection.
 %%
@@ -91,8 +96,29 @@ accept(_Socket) ->
 -spec accept(server_socket(), non_neg_integer()) ->
   {ok, connection_socket()} | {error, timeout} | {error, term()}.
 
-accept(_Socket, _Timeout) ->
-  {error, not_implemented}.
+accept(Socket, Timeout) when Timeout =< 0 ->
+  case try_accept(Socket) of
+    {ok, Client} -> {ok, Client};
+    nothing -> {error, timeout}
+  end;
+
+accept(Socket, Timeout) when Timeout =< ?ACCEPT_LOOP_INTERVAL ->
+  case try_accept(Socket) of
+    {ok, Client} ->
+      {ok, Client};
+    nothing ->
+      timer:sleep(Timeout),
+      accept(Socket, 0)
+  end;
+
+accept(Socket, Timeout) when Timeout > ?ACCEPT_LOOP_INTERVAL ->
+  case try_accept(Socket) of
+    {ok, Client} ->
+      {ok, Client};
+    nothing ->
+      timer:sleep(?ACCEPT_LOOP_INTERVAL),
+      accept(Socket, Timeout - ?ACCEPT_LOOP_INTERVAL)
+  end.
 
 %%%---------------------------------------------------------------------------
 %%% connection socket
@@ -111,8 +137,14 @@ connect(_Address, _Opts) ->
 %% @spec send(connection_socket(), iolist() | binary()) ->
 %%   ok | {error, Reason}
 
-send(_Socket, _Data) ->
-  {error, not_implemented}.
+send(Socket, Data) ->
+  try
+    port_command(Socket, Data),
+    ok
+  catch
+    error:badarg ->
+      {error, badarg}
+  end.
 
 %% @doc Read `Length' bytes from socket.
 %%
@@ -167,6 +199,22 @@ close(Socket) ->
 %%%---------------------------------------------------------------------------
 %%% private helpers
 %%%---------------------------------------------------------------------------
+
+%% @doc Try accepting connection.
+%%
+%% @spec try_accept(server_socket()) ->
+%%   {ok, connection_socket()} | nothing
+
+try_accept(Socket) ->
+  case erlang:port_call(Socket, ?PORT_COMMAND_ACCEPT, ignore) of
+    {ok, nothing} ->
+      nothing;
+    {ok, client} ->
+      receive
+        {Socket, {client, Client}} ->
+          {ok, Client}
+      end
+  end.
 
 %% @doc Ensure the port driver library is loaded.
 %%
