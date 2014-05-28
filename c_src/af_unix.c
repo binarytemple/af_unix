@@ -45,7 +45,10 @@ typedef int erl_size_t;
 typedef int erl_ssize_t;
 #endif
 
-#define PORT_COMMAND_ACCEPT 133
+#define PORT_COMMAND_ACCEPT           133 // accept()
+#define PORT_COMMAND_RECV             135 // recv(Size)
+#define PORT_COMMAND_SET_ACTIVE       136 // setopts([{active, true}])
+#define PORT_COMMAND_SET_INACTIVE     137 // setopts([{active, false}])
 
 // }}}
 //----------------------------------------------------------
@@ -284,7 +287,7 @@ int setup_client_socket(struct unix_sock_context *context, char *addr, int len)
   context->fd = csock;
 
   ErlDrvEvent event = (ErlDrvEvent)((long int)context->fd);
-  driver_select(context->erl_port, event, ERL_DRV_USE | ERL_DRV_READ, 1);
+  driver_select(context->erl_port, event, ERL_DRV_USE, 1);
 
   return 0;
 }
@@ -348,7 +351,13 @@ void unix_sock_driver_output(ErlDrvData drv_data, char *buf, erl_size_t len)
 //----------------------------------------------------------
 // Erlang port call (listening socket) {{{
 
-void spawn_client_port(ErlDrvPort creator, int client);
+erl_ssize_t dispatch_server_command(struct unix_sock_context *context,
+                                    unsigned int command,
+                                    char **rbuf, erl_size_t rlen);
+erl_ssize_t dispatch_client_command(struct unix_sock_context *context,
+                                    unsigned int command,
+                                    char *buf, erl_size_t len,
+                                    char **rbuf, erl_size_t rlen);
 
 erl_ssize_t unix_sock_driver_call(ErlDrvData drv_data, unsigned int command,
                                   char *buf, erl_size_t len,
@@ -360,10 +369,75 @@ erl_ssize_t unix_sock_driver_call(ErlDrvData drv_data, unsigned int command,
   fprintf(stderr, "@@ driver call(type=%d, fd=%d, command=%d, rlen=%d, flags=%x)\r\n",
           context->type, context->fd, command, (int)rlen, *flags);
 
-  if (context->type == entry_client)
-    // client socket doesn't support port_call()
-    return -1;
+  // TODO: {error,Reason} instead of -1
+  if (context->type == entry_client) {
+    return dispatch_client_command(context, command, buf, len, rbuf, rlen);
+  } else { // context->type == entry_server
+    return dispatch_server_command(context, command, rbuf, rlen);
+  }
+}
 
+// }}}
+//----------------------------------------------------------
+// Erlang input on select socket {{{
+
+void read_data(ErlDrvPort port, int fd, char *buffer, int buflen);
+
+void unix_sock_driver_ready_input(ErlDrvData drv_data, ErlDrvEvent event)
+{
+  struct unix_sock_context *context = (struct unix_sock_context *)drv_data;
+  // event == context->fd
+
+  fprintf(stderr, "@@ driver input ready(type = %d, fd = %d)\r\n",
+          context->type, context->fd);
+
+  // XXX: context->type == entry_client, because entry_server is handled by
+  // poll() without Erlang
+  read_data(context->erl_port, context->fd,
+            context->client.buffer, sizeof(context->client.buffer));
+}
+
+void read_data(ErlDrvPort port, int fd, char *buffer, int buflen)
+{
+  ErlDrvTermData owner = driver_connected(port);
+
+  int read_len = read(fd, buffer, buflen);
+
+  if (read_len < 0) {
+    // TODO: send `{unix_error, Port, Reason}'
+  } else if (read_len == 0) {
+    ErlDrvTermData data[] = { // send `{unix_closed, Port}'
+      ERL_DRV_ATOM, driver_mk_atom("unix_closed"),
+      ERL_DRV_PORT, driver_mk_port(port),
+      ERL_DRV_TUPLE, 2
+    };
+    // FIXME: this will be removed in OTP R17, use erl_drv_send_term()
+    driver_send_term(port, owner, data, sizeof(data) / sizeof(data[0]));
+    driver_failure_eof(port);
+  } else { // read_len > 0
+    ErlDrvTermData data[] = { // send `{unix, Port, Data}'
+      ERL_DRV_ATOM, driver_mk_atom("unix"),
+      ERL_DRV_PORT, driver_mk_port(port),
+      ERL_DRV_BUF2BINARY, (ErlDrvTermData)buffer, read_len,
+      ERL_DRV_TUPLE, 3
+    };
+    // FIXME: this will be removed in OTP R17, use erl_drv_send_term()
+    driver_send_term(port, owner, data, sizeof(data) / sizeof(data[0]));
+  }
+}
+
+// }}}
+//----------------------------------------------------------
+
+//----------------------------------------------------------
+// dispatch port_call() on server socket {{{
+
+void spawn_client_port(ErlDrvPort creator, int client);
+
+erl_ssize_t dispatch_server_command(struct unix_sock_context *context,
+                                    unsigned int command,
+                                    char **rbuf, erl_size_t rlen)
+{
   int has_new_client = 0;
 
   switch (command) {
@@ -383,7 +457,8 @@ erl_ssize_t unix_sock_driver_call(ErlDrvData drv_data, unsigned int command,
       fprintf(stderr, "@@ poll() finished\r\n");
     break;
 
-    // TODO: default: error
+    default:
+      return -1;
   }
 
   // result:
@@ -434,8 +509,9 @@ void spawn_client_port(ErlDrvPort creator, int client)
 
   context->type = entry_client;
   context->fd = client;
-  ErlDrvPort port = driver_create_port(creator, caller, PORT_DRIVER_NAME,
-                                       (ErlDrvData)context);
+  ErlDrvPort port = (ErlDrvPort)driver_create_port(creator, caller,
+                                                   PORT_DRIVER_NAME,
+                                                   (ErlDrvData)context);
   context->erl_port = port;
 
   ErlDrvTermData data[] = {
@@ -449,56 +525,167 @@ void spawn_client_port(ErlDrvPort creator, int client)
   driver_send_term(creator, caller, data, sizeof(data) / sizeof(data[0]));
 
   ErlDrvEvent event = (ErlDrvEvent)((long int)context->fd);
-  driver_select(port, event, ERL_DRV_USE | ERL_DRV_READ, 1);
+  driver_select(port, event, ERL_DRV_USE, 1);
 }
 
 // }}}
 //----------------------------------------------------------
-// Erlang input on select socket {{{
+// dispatch port_call() on client socket {{{
 
-void read_data(ErlDrvPort port, int fd, char *buffer, int buflen);
+erl_ssize_t try_read(struct unix_sock_context *context,
+                     unsigned long max_size);
 
-void unix_sock_driver_ready_input(ErlDrvData drv_data, ErlDrvEvent event)
+erl_ssize_t dispatch_client_command(struct unix_sock_context *context,
+                                    unsigned int command,
+                                    char *buf, erl_size_t len,
+                                    char **rbuf, erl_size_t rlen)
 {
-  struct unix_sock_context *context = (struct unix_sock_context *)drv_data;
-  // event == context->fd
+  int index = 0;
+  unsigned long read_size;
+  int result_len;
+  ErlDrvEvent event;
+  erl_ssize_t read_result;
 
-  fprintf(stderr, "@@ driver input ready(type = %d, fd = %d)\r\n",
-          context->type, context->fd);
+  switch (command) {
+    case PORT_COMMAND_RECV: // recv(Size)
+      fprintf(stderr, "@@ recv()\r\n");
+      ei_decode_version(buf, &index, NULL); // ignore version header
+      if (ei_decode_ulong(buf, &index, &read_size) != 0)
+        return -1;
 
-  // XXX: context->type == entry_client, because entry_server is handled by
-  // poll() without Erlang
-  read_data(context->erl_port, context->fd,
-            context->client.buffer, sizeof(context->client.buffer));
+      read_result = try_read(context, read_size);
+      if (read_result == -1) { // error
+        fprintf(stderr, "@@ -1 (error)\r\n");
+        return -1;
+      } else if (read_result == -2) { // EOF
+        fprintf(stderr, "@@ -2 (EOF)\r\n");
+        // send `{error, closed}'
+        result_len = 0;
+        ei_encode_version(NULL, &result_len);
+        ei_encode_tuple_header(NULL, &result_len, 2);
+        ei_encode_atom(NULL, &result_len, "error");
+        ei_encode_atom(NULL, &result_len, "closed");
+
+        if (result_len > rlen) {
+          *rbuf = driver_alloc(result_len);
+        }
+
+        result_len = 0;
+        ei_encode_version(*rbuf, &result_len);
+        ei_encode_tuple_header(*rbuf, &result_len, 2);
+        ei_encode_atom(*rbuf, &result_len, "error");
+        ei_encode_atom(*rbuf, &result_len, "closed");
+        return result_len;
+      } else if (read_result == 0) {
+        // send `nothing'
+        result_len = 0;
+        ei_encode_version(NULL, &result_len);
+        ei_encode_atom(NULL, &result_len, "nothing");
+
+        if (result_len > rlen) {
+          *rbuf = driver_alloc(result_len);
+        }
+
+        result_len = 0;
+        ei_encode_version(*rbuf, &result_len);
+        ei_encode_atom(*rbuf, &result_len, "nothing");
+        return result_len;
+      } else {
+        fprintf(stderr, "@@ >0 (data)\r\n");
+        // send `{ok, binary()}'
+        result_len = 0;
+        ei_encode_version(NULL, &result_len);
+        ei_encode_tuple_header(NULL, &result_len, 2);
+        ei_encode_atom(NULL, &result_len, "ok");
+        ei_encode_binary(NULL, &result_len,
+                         context->client.buffer, read_result);
+
+        if (result_len > rlen) {
+          *rbuf = driver_alloc(result_len);
+        }
+
+        result_len = 0;
+        ei_encode_version(*rbuf, &result_len);
+        ei_encode_tuple_header(*rbuf, &result_len, 2);
+        ei_encode_atom(*rbuf, &result_len, "ok");
+        ei_encode_binary(*rbuf, &result_len,
+                         context->client.buffer, read_result);
+
+        return result_len;
+      }
+      fprintf(stderr, "@@ WTF?\r\n");
+    break;
+
+    case PORT_COMMAND_SET_ACTIVE: // setopts([{active, true}]), no argument
+      event = (ErlDrvEvent)((long int)context->fd);
+      driver_select(context->erl_port, event, ERL_DRV_READ, 1);
+
+      result_len = 0;
+      ei_encode_version(NULL, &result_len);
+      ei_encode_atom(NULL, &result_len, "ok");
+
+      if (result_len > rlen) {
+        *rbuf = driver_alloc(result_len);
+      }
+
+      result_len = 0;
+      ei_encode_version(*rbuf, &result_len);
+      ei_encode_atom(*rbuf, &result_len, "ok");
+      return result_len;
+    break;
+
+    case PORT_COMMAND_SET_INACTIVE: // setopts([{active, false}]), no argument
+      event = (ErlDrvEvent)((long int)context->fd);
+      driver_select(context->erl_port, event, ERL_DRV_READ, 0);
+
+      result_len = 0;
+      ei_encode_version(NULL, &result_len);
+      ei_encode_atom(NULL, &result_len, "ok");
+
+      if (result_len > rlen) {
+        *rbuf = driver_alloc(result_len);
+      }
+
+      result_len = 0;
+      ei_encode_version(*rbuf, &result_len);
+      ei_encode_atom(*rbuf, &result_len, "ok");
+      return result_len;
+    break;
+
+    default:
+      return -1;
+  }
+
+  return -1;
 }
 
-void read_data(ErlDrvPort port, int fd, char *buffer, int buflen)
+erl_ssize_t try_read(struct unix_sock_context *context,
+                     unsigned long max_size)
 {
-  ErlDrvTermData owner = driver_connected(port);
+  struct pollfd poll_fd = { context->fd, POLLIN };
+  if (poll(&poll_fd, 1, 0) < 1)
+    return 0;
 
-  int read_len = read(fd, buffer, buflen);
+  if (max_size > sizeof(context->client.buffer) || max_size == 0)
+    max_size = sizeof(context->client.buffer);
 
-  if (read_len < 0) {
-    // TODO: send `{unix_error, Port, Reason}'
-  } else if (read_len == 0) {
-    ErlDrvTermData data[] = { // send `{unix_closed, Port}'
-      ERL_DRV_ATOM, driver_mk_atom("unix_closed"),
-      ERL_DRV_PORT, driver_mk_port(port),
-      ERL_DRV_TUPLE, 2
-    };
-    // FIXME: this will be removed in OTP R17, use erl_drv_send_term()
-    driver_send_term(port, owner, data, sizeof(data) / sizeof(data[0]));
-    driver_failure_eof(port);
-  } else { // read_len > 0
-    ErlDrvTermData data[] = { // send `{unix, Port, Data}'
-      ERL_DRV_ATOM, driver_mk_atom("unix"),
-      ERL_DRV_PORT, driver_mk_port(port),
-      ERL_DRV_BUF2BINARY, (ErlDrvTermData)buffer, read_len,
-      ERL_DRV_TUPLE, 3
-    };
-    // FIXME: this will be removed in OTP R17, use erl_drv_send_term()
-    driver_send_term(port, owner, data, sizeof(data) / sizeof(data[0]));
+  fprintf(stderr, "@@ try_read(%d)\r\n", (int)max_size);
+
+  int result = read(context->fd, context->client.buffer, max_size);
+  if (result == 0) {
+    fprintf(stderr, "@@ EOF\r\n");
+    return -2; // EOF
   }
+
+  if (result < 0) {
+    int old_errno = errno;
+    fprintf(stderr, "@@ error (errno=%d)\r\n", errno);
+    errno = old_errno;
+    return -1;
+  }
+
+  fprintf(stderr, "@@ recv() -> %d bytes\r\n", result);
+  return result;
 }
 
 // }}}
