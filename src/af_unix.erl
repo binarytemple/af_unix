@@ -59,14 +59,7 @@
   {ok, server_socket()} | {error, term()}.
 
 listen(Address) ->
-  ensure_driver_loaded(),
-  try
-    Port = open_port({spawn_driver, "af_unix_drv " ++ Address}, [binary]),
-    {ok, Port}
-  catch
-    error:Reason ->
-      {error, Reason}
-  end.
+  spawn_driver(listen, Address).
 
 %% @doc Accept a client connection.
 %%   The function waits infinitely for a client.
@@ -129,8 +122,8 @@ accept(Socket, Timeout) when Timeout > ?ACCEPT_LOOP_INTERVAL ->
 %% @spec connect(string(), list()) ->
 %%   {ok, connection_socket()} | {error, Reason}
 
-connect(_Address, _Opts) ->
-  {error, not_implemented}.
+connect(Address, _Opts) ->
+  spawn_driver(connect, Address).
 
 %% @doc Send data to the socket.
 %%
@@ -199,6 +192,26 @@ close(Socket) ->
 %%%---------------------------------------------------------------------------
 %%% private helpers
 %%%---------------------------------------------------------------------------
+
+%% @doc Try accepting connection.
+%%
+%% @spec spawn_driver(listen | connect, string()) ->
+%%   {ok, socket()} | {error, Reason}
+
+spawn_driver(Type, Address) ->
+  DriverCommand = case Type of
+    listen  -> ?PORT_DRIVER_NAME ++ " l:" ++ Address;
+    connect -> ?PORT_DRIVER_NAME ++ " c:" ++ Address
+  end,
+  ensure_driver_loaded(),
+  try
+    Port = open_port({spawn_driver, DriverCommand}, [binary]),
+    {ok, Port}
+  catch
+    error:Reason ->
+      {error, Reason}
+  end.
+
 
 %% @doc Try accepting connection.
 %%

@@ -85,6 +85,32 @@ int unix_srv_listen(char *address, int type, uid_t uid, gid_t gid, mode_t mode)
   return lsock;
 }
 
+int unix_srv_connect(char *address)
+{
+  struct sockaddr_un addr;
+  addr.sun_family = AF_UNIX;
+  strncpy(addr.sun_path, address, sizeof(addr.sun_path));
+
+  // first try the stream socket
+  int csock = socket(AF_UNIX, SOCK_STREAM, 0);
+  if (connect(csock, (struct sockaddr *)&addr, sizeof(addr)) == 0)
+    return csock;
+
+  // wrong protocol, try datagram socket
+  if (errno == EPROTOTYPE) {
+    close(csock); // don't need to save errno
+    csock = socket(AF_UNIX, SOCK_DGRAM, 0);
+    if (connect(csock, (struct sockaddr *)&addr, sizeof(addr)) == 0)
+      return csock;
+  }
+
+  int old_errno = errno; // close() can change errno
+  close(csock);
+  errno = old_errno;
+
+  return -1;
+}
+
 void unix_srv_close(char *address, int lsock)
 {
   close(lsock);
@@ -164,7 +190,8 @@ DRIVER_INIT(PORT_DRIVER_NAME_SYM)
 //----------------------------------------------------------
 // Erlang port start (listening socket) {{{
 
-int setup_socket(struct unix_sock_context *context, char *addr, int len);
+int setup_server_socket(struct unix_sock_context *context, char *addr, int len);
+int setup_client_socket(struct unix_sock_context *context, char *addr, int len);
 char* find_address(char *cmd);
 
 ErlDrvData unix_sock_driver_start(ErlDrvPort port, char *cmd)
@@ -178,17 +205,31 @@ ErlDrvData unix_sock_driver_start(ErlDrvPort port, char *cmd)
   memset(context, 0, sizeof(*context));
 
   context->erl_port = port;
-  context->type = entry_server;
 
   char *address = find_address(cmd);
 
-  // TODO: setup_socket() < 0 => error
-  if (setup_socket(context, address, strlen(address)) < 0) {
-    int old_errno = errno;
-    fprintf(stderr, "@@ setup socket: error\r\n");
-    errno = old_errno;
+  if (address[0] == 'l') { // listening socket
+    address += 2; // "l:/some/where.sock"
+    context->type = entry_server;
 
-    return ERL_DRV_ERROR_ERRNO;
+    if (setup_server_socket(context, address, strlen(address)) < 0) {
+      int old_errno = errno;
+      fprintf(stderr, "@@ setup server socket: error\r\n");
+      errno = old_errno;
+
+      return ERL_DRV_ERROR_ERRNO;
+    }
+  } else if (address[0] == 'c') { // client socket
+    address += 2; // "c:/some/where.sock"
+    context->type = entry_client;
+
+    if (setup_client_socket(context, address, strlen(address)) < 0) {
+      int old_errno = errno;
+      fprintf(stderr, "@@ setup client socket: error\r\n");
+      errno = old_errno;
+
+      return ERL_DRV_ERROR_ERRNO;
+    }
   }
 
   return (ErlDrvData)context;
@@ -201,7 +242,7 @@ char* find_address(char *cmd)
   return cmd;
 }
 
-int setup_socket(struct unix_sock_context *context, char *addr, int len)
+int setup_server_socket(struct unix_sock_context *context, char *addr, int len)
 {
   fprintf(stderr, "@@ setup socket: %.*s\r\n", len, addr);
 
@@ -225,6 +266,25 @@ int setup_socket(struct unix_sock_context *context, char *addr, int len)
   context->fd = lsock;
   context->server.poll[0].fd = context->fd;
   context->server.poll[0].events = POLLIN;
+
+  return 0;
+}
+
+int setup_client_socket(struct unix_sock_context *context, char *addr, int len)
+{
+  fprintf(stderr, "@@ connect to socket: %.*s\r\n", len, addr);
+
+  // XXX: remember to preserve errno on error
+  int csock = unix_srv_connect(addr);
+  if (csock < 0)
+    return -1;
+
+  fprintf(stderr, "@@ connect() -> fd=%d\r\n", csock);
+
+  context->fd = csock;
+
+  ErlDrvEvent event = (ErlDrvEvent)((long int)context->fd);
+  driver_select(context->erl_port, event, ERL_DRV_USE | ERL_DRV_READ, 1);
 
   return 0;
 }
