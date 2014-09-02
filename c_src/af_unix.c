@@ -369,7 +369,6 @@ erl_ssize_t unix_sock_driver_call(ErlDrvData drv_data, unsigned int command,
   fprintf(stderr, "@@ driver call(type=%d, fd=%d, command=%d, rlen=%d, flags=%x)\r\n",
           context->type, context->fd, command, (int)rlen, *flags);
 
-  // TODO: {error,Reason} instead of -1
   if (context->type == entry_client) {
     return dispatch_client_command(context, command, buf, len, rbuf, rlen);
   } else { // context->type == entry_server

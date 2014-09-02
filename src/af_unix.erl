@@ -94,8 +94,6 @@ accept(Socket) ->
 
 %% @doc Accept a client connection.
 %%
-%%   To work with returned socket, see {@link af_unix_connection}.
-%%
 %% @spec accept(server_socket(), non_neg_integer()) ->
 %%   {ok, connection_socket()} | {error, timeout} | {error, Reason}
 
