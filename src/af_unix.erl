@@ -39,7 +39,7 @@
 -define(PORT_COMMAND_ACCEPT,          133).
 -define(PORT_COMMAND_RECV,            135).
 -define(PORT_COMMAND_SET_ACTIVE,      136).
--define(PORT_COMMAND_SET_INACTIVE,    137).
+-define(PORT_COMMAND_SET_PASSIVE,     137).
 
 %%%---------------------------------------------------------------------------
 
@@ -260,7 +260,7 @@ setopts(Socket, [{active, Active} | Rest] = _Options) ->
       ok = erlang:port_call(Socket, ?PORT_COMMAND_SET_ACTIVE, ignore),
       setopts(Socket, Rest);
     false ->
-      ok = erlang:port_call(Socket, ?PORT_COMMAND_SET_INACTIVE, ignore),
+      ok = erlang:port_call(Socket, ?PORT_COMMAND_SET_PASSIVE, ignore),
       setopts(Socket, Rest);
     _Any ->
       {error, badarg}

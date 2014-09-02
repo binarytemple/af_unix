@@ -48,7 +48,7 @@ typedef int erl_ssize_t;
 #define PORT_COMMAND_ACCEPT           133 // accept()
 #define PORT_COMMAND_RECV             135 // recv(Size)
 #define PORT_COMMAND_SET_ACTIVE       136 // setopts([{active, true}])
-#define PORT_COMMAND_SET_INACTIVE     137 // setopts([{active, false}])
+#define PORT_COMMAND_SET_PASSIVE      137 // setopts([{active, false}])
 
 // }}}
 //----------------------------------------------------------
@@ -634,7 +634,7 @@ erl_ssize_t dispatch_client_command(struct unix_sock_context *context,
       return result_len;
     break;
 
-    case PORT_COMMAND_SET_INACTIVE: // setopts([{active, false}]), no argument
+    case PORT_COMMAND_SET_PASSIVE: // setopts([{active, false}]), no argument
       event = (ErlDrvEvent)((long int)context->fd);
       driver_select(context->erl_port, event, ERL_DRV_READ, 0);
 
